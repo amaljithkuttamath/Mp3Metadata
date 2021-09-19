@@ -1,0 +1,6 @@
+ShazamAPI~=0.0.2
+mutagen~=1.45.1
+prettyprint
+etime
+requests
+ttkbootstrap~=0.5.1
