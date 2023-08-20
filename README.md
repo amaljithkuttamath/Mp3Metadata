@@ -12,6 +12,3 @@ ShazamAPI
     - Genre 
     - Year 
     - Album
-
-Uses multiprocessing to speed up the process.
-
