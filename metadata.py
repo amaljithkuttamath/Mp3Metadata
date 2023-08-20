@@ -3,25 +3,23 @@ import os
 import time
 import tkinter.scrolledtext as ScrolledText
 from concurrent.futures import ProcessPoolExecutor
-from tkinter import (
-    END,
-    Button,
-    Label,
-    StringVar,
-    Tk,
-    filedialog
-)
-
+import tkinter as tk
+from tkinter import ttk
+from tkinter import ttk, filedialog, Menu, Text, END
+from threading import Thread
+import requests
 from ShazamAPI import Shazam
 from mutagen.id3 import APIC, ID3, USLT
 from mutagen.mp3 import EasyMP3
+from pprint import pprint
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger()
 # logger = logging.getLogger(__name__)
 from threading import Thread
+
+dark_mode = True
+# folder_path = StringVar()
 
 
 def run_in_thread(fun):
@@ -34,99 +32,115 @@ def run_in_thread(fun):
     return wrapper
 
 
-# @run_in_thread
-def individual_process(mp3file_name, select_directory):
-    global x
-    x=None
-    file_name = mp3file_name
-    mp3_file_content_to_recognize = open(file_name, "rb").read()
-    tags = EasyMP3(file_name)
-    tags.delete()
-    tags.save()
-    title_ = None
-    shazam = Shazam(mp3_file_content_to_recognize)
+def fetch_song_details(mp3_file_content):
+    """Fetch song details using Shazam API."""
+    shazam = Shazam(mp3_file_content)
     try:
         recognize_generator = shazam.recognizeSong()
-        # # while True:
-        x = next(recognize_generator)
-        # plogger.info(x)
-        if x[1].get("track") is None:
-            logger.info("Cant recognise song")
-    except Exception as except__:
-        logger.error("cant recognise song", except__)
+        song_details = next(recognize_generator)
+        if not song_details[1].get("track"):
+            logger.info("Can't recognize song")
+            return None
+        return song_details[1].get("track")
+    except Exception as e:
+        logger.error(f"Error recognizing song: {e}")
+        return None
 
-    try:
-        title = x[1].get("track").get("title")
-        artist = x[1].get("track").get("subtitle")
-        genre = x[1].get("track").get("sections")[0].get("metadata")[1].get("text")
-        year = x[1].get("track").get("sections")[0].get("metadata")[2].get("text")
-        album = x[1].get("track").get("sections")[0].get("metadata")[0].get("text")
-    except Exception as except__:
-        logger.info("Exception in extraction ", except__)
-        pass
 
+def update_tags(file_name, title, artist, genre, year, album):
+    """Update MP3 tags."""
     try:
+        tags = EasyMP3(file_name)
         tags["date"] = year
         tags["genre"] = genre
         tags["title"] = title
         tags["artist"] = artist
         tags["album"] = album
         tags.save()
-    except Exception as except__:
-        logger.info("Exception in TAGS ", except__)
-        pass
+    except Exception as e:
+        logger.error(f"Error updating tags: {e}")
 
+
+def add_lyrics(file_name, lyrics):
+    """Add lyrics to MP3 file."""
     try:
-        logger.info(f"      | Fetching Lyrics   |")
-        lyrics = x[1].get("track").get("sections")[1].get("text")
-        if lyrics:
-            tags = ID3(file_name)
-            uslt_output = USLT(encoding=3, lang="eng", desc="desc", text=lyrics)
-            tags["USLT::'eng'"] = uslt_output
+        tags = ID3(file_name)
+        uslt_output = USLT(encoding=3, lang="eng", desc="desc", text=lyrics)
+        tags["USLT::'eng'"] = uslt_output
+        tags.save(file_name)
+    except Exception as e:
+        logger.error(f"Error adding lyrics: {e}")
 
-            tags.save(file_name)
-        else:
-            pass
-    except Exception as except__:
-        logger.error("Exception in LYRIC ", except__)
-        pass
 
+def add_album_art(file_name, image_url):
+    """Add album art to MP3 file."""
     try:
-        image = x[1].get("track").get("share").get("image")
-        if image:
-            import requests
-
-            logger.info(f"      | Fetching Image    |")
-            img = requests.get(image, stream=True).raw  # Gets album art from url
-
-            audio = EasyMP3(file_name, ID3=ID3)
-
-            audio.tags.add(
-                APIC(
-                    encoding=3,  # UTF-8
-                    mime="image/png",
-                    type=3,  # 3 is for album art
-                    desc="Cover",
-                    data=img.read(),  # Reads and adds album art
-                )
+        img = requests.get(image_url, stream=True).raw
+        audio = EasyMP3(file_name, ID3=ID3)
+        audio.tags.add(
+            APIC(
+                encoding=3,
+                mime="image/png",
+                type=3,
+                desc="Cover",
+                data=img.read(),
             )
-            logger.info(f"      | Saving..          |")
-            audio.save()
-            logger.info(f"{title} | Saved ]")
+        )
+        audio.save()
+    except Exception as e:
+        logger.error(f"Error adding album art: {e}")
 
-        else:
-            pass
-    except Exception as except__:
-        logger.info("Exception in ALBUM ART ", except__)
-        pass
 
+def individual_process(mp3file_name, select_directory):
+    file_name = mp3file_name
+    mp3_file_content_to_recognize = open(file_name, "rb").read()
+
+    # Fetch song details
+    song_details = fetch_song_details(mp3_file_content_to_recognize)
+    # pprint(song_details)
+    if not song_details:
+        return "Unrecognized song"
+
+    # Extract song details
+    title = song_details.get("title")
+    artist = song_details.get("subtitle")
+    genre = song_details.get("genres", {}).get("primary", None)
+
+    # Safely extract year
+    sections = song_details.get("sections", [])
+    metadata = sections[0].get("metadata", []) if sections else []
+    year = metadata[2].get("text") if len(metadata) > 2 else None
+
+    # Safely extract album
+    album = metadata[0].get("text") if metadata else None
+
+    # Update tags
+    update_tags(file_name, title, artist, genre, year, album)
+
+    # Add lyrics
+    lyrics = song_details.get("sections")[1].get("text")
+    if lyrics:
+        add_lyrics(file_name, lyrics)
+
+    # Add album art
+    image_url = song_details.get("share").get("image")
+    if image_url:
+        add_album_art(file_name, image_url)
+
+    # Rename file
+    invalid_chars = ["<", ">", ":", '"', "/", "\\", "|", "?", "*"]
+    new_file_name = f"{title} | {artist}.mp3"
+    for char in invalid_chars:
+        new_file_name = new_file_name.replace(char, "")
+    # new_file_name = new_file_name.replace(char, '')
+
+    # new_file_name = f"{title} | {artist}.mp3"
     try:
-        title_ = f"{title} | {artist}.mp3"
-        os.rename(f"{file_name}", f"{select_directory}/{title_}")
-    except Exception as except__:
-        logger.error(f"Exception in RENAMING {except__}")
-        return f"Exception in RENAMING {except__}"
-    return f"{title_} | Saved"
+        os.rename(file_name, os.path.join(select_directory, new_file_name))
+        return f"{new_file_name} | Saved"
+    except Exception as e:
+        logger.error(f"Error renaming file: {e}")
+        return f"Error renaming file: {e}"
 
 
 @run_in_thread
@@ -136,9 +150,7 @@ def process():
     responses = []
     with ProcessPoolExecutor() as executor:
         for mp3file_name in mp3gen(select_directory):
-            responses.append(
-                executor.submit(individual_process, mp3file_name, select_directory)
-            )
+            responses.append(executor.submit(individual_process, mp3file_name, select_directory))
             # individual_process(mp3file_name, select_directory)
             # ET()
             # executor.map()
@@ -180,6 +192,114 @@ def browse_button():
     folder_path.set(selected_directory)
 
 
+def play_music():
+    file_path = filedialog.askopenfilename()
+    # Use a library like pygame to play the music
+    # pygame.mixer.music.load(file_path)
+    # pygame.mixer.music.play()
+
+
+def create_ui():
+    global window, title_label, folder_path, style, dark_mode
+    window = tk.Tk()
+    window.geometry("900x600")
+    window.title("MP3 Album Artwork Enhancer")
+    window.configure(bg="#f0f0f0")
+
+    # Menu Bar
+    menu = Menu(window)
+    window.config(menu=menu)
+
+    file_menu = Menu(menu)
+    menu.add_cascade(label="File", menu=file_menu)
+    file_menu.add_command(label="Open", command=browse_button)
+    file_menu.add_command(label="Exit", command=window.quit)
+
+    view_menu = Menu(menu)
+    menu.add_cascade(label="View", menu=view_menu)
+    # view_menu.add_command(label="Lyrics", command=show_lyrics)
+    view_menu.add_command(label="Player", command=play_music)
+
+    # Create a style for the label
+    style = ttk.Style()
+    style.configure("BG.TLabel", background="#f0f0f0")
+
+    # Title Label with the new style
+    title_label = ttk.Label(window, text="MP3 Album Artwork Enhancer", font=("Arial", 24, "bold"), style="BG.TLabel")
+    title_label.pack(pady=20)
+
+    # Instructions Label
+    instructions_label = ttk.Label(
+        window,
+        text="Select the directory of MP3 files and enhance them with album artwork and metadata.",
+        wraplength=800,
+        font=("Arial", 12),
+    )
+    instructions_label.pack(pady=10)
+
+    # Directory Selection Frame
+    directory_frame = ttk.Frame(window)
+    directory_frame.pack(pady=20, padx=20, fill=tk.X)
+
+    folder_label = ttk.Label(directory_frame, text="Directory:", font=("Arial", 12))
+    folder_label.grid(row=0, column=0, padx=(0, 10))
+
+    folder_path = tk.StringVar()
+    folder_entry = ttk.Entry(directory_frame, textvariable=folder_path, width=50)
+    folder_entry.grid(row=0, column=1, padx=(0, 10), sticky=tk.W)
+
+    select_directory_button = ttk.Button(directory_frame, text="Select Directory", command=browse_button)
+    select_directory_button.grid(row=0, column=2)
+
+    # Action Buttons Frame
+    action_frame = ttk.Frame(window)
+    action_frame.pack(pady=20)
+
+    go_button = ttk.Button(action_frame, text="Enhance MP3s", command=process)
+    go_button.pack(side=tk.LEFT, padx=10)
+
+    # play_button = ttk.Button(action_frame, text="Play", command=play_music)
+    # play_button.pack(side=tk.LEFT, padx=10)
+
+    dark_mode_button = ttk.Button(action_frame, text="Toggle Dark Mode", command=toggle_dark_mode)
+    dark_mode_button.pack(side=tk.LEFT, padx=10)
+
+    quit_button = ttk.Button(action_frame, text="Quit", command=window.quit)
+    quit_button.pack(side=tk.LEFT, padx=10)
+
+    # Log Frame
+    log_frame = ttk.LabelFrame(window, text="Logs", padding=(10, 10))
+    log_frame.pack(pady=20, padx=20, fill=tk.BOTH, expand=True)
+
+    st = ScrolledText.ScrolledText(log_frame, wrap=tk.WORD, width=80, height=20)
+    st.pack(fill=tk.BOTH, expand=True)
+
+    # Attach logger to scrolled text
+    text_handler = TextHandler(st)
+    logger.addHandler(text_handler)
+
+    window.mainloop()
+
+
+def toggle_dark_mode():
+    global dark_mode, window, title_label, style, dark_mode
+
+    if not dark_mode:
+        # Switch to dark mode
+        window.configure(bg="#333")
+        style.configure("BG.TLabel", background="#333", foreground="#f0f0f0")
+        title_label.configure(style="BG.TLabel")
+        # ... [configure other widgets for dark mode]
+        dark_mode = True
+    else:
+        # Switch to light mode
+        window.configure(bg="#f0f0f0")
+        style.configure("BG.TLabel", background="#f0f0f0", foreground="#333")
+        title_label.configure(style="BG.TLabel")
+        # ... [configure other widgets for light mode]
+        dark_mode = False
+
+
 class TextHandler(logging.Handler):
     # This class allows you to log to a Tkinter Text or ScrolledText widget
     # Adapted from Moshe Kaplan: https://gist.github.com/moshekaplan/c425f861de7bbf28ef06
@@ -204,41 +324,7 @@ class TextHandler(logging.Handler):
         self.text.after(0, append)
 
 
-# class Application(Tk):
-
-#     def __init__(self):
-#         super().__init__()
-#         self.title('Media Player')
-#         self.style = Style()
-#         self.style.theme_use('minty')
-
 if __name__ == "__main__":
     # with ETM() as etm:
     # style = Style(theme='superhero')
-    window = Tk()
-    window.geometry("900x500")
-    window.title("MP3 Album Artwork")
-
-    st = ScrolledText.ScrolledText()
-    st.configure(font="TkFixedFont")
-    st.pack()
-    text_handler = TextHandler(st)
-    logger.addHandler(text_handler)
-    logger.info("Hey - Select the directory of mp3 files below..")
-    select_directory = Button(window, text="Select Directory", command=browse_button)
-    select_directory.pack()
-
-    # Label to store chosen directory.
-    folder_path = StringVar()
-    directory_label = Label(window, textvariable=folder_path, bg="#D3D3D3", width=70)
-    directory_label.pack()
-
-    # Button to run main script.
-    go_button = Button(window, text="Go", command=process)
-    go_button.pack()
-
-    # Button to quit the app.
-    quit_button = Button(window, text="Quit", command=window.quit)
-    quit_button.pack()
-
-    window.mainloop()
+    create_ui()
